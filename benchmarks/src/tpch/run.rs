@@ -95,6 +95,10 @@ pub struct RunOpt {
     /// The tables should have been created with the `--sort` option for this to have any effect.
     #[structopt(short = "t", long = "sorted")]
     sorted: bool,
+
+    /// Directory to save query results for correctness comparison
+    #[structopt(parse(from_os_str), long = "save-results")]
+    save_results_path: Option<PathBuf>,
 }
 
 const TPCH_QUERY_START_ID: usize = 1;
@@ -179,6 +183,13 @@ impl RunOpt {
                 "Query {query_id} iteration {i} took {ms:.1} ms and returned {row_count} rows"
             );
             query_results.push(QueryResult { elapsed, row_count });
+
+            // Save results to file if requested (only for first iteration to avoid duplicates)
+            if i == 0 {
+                if let Some(ref save_path) = self.save_results_path {
+                    self.save_query_results(query_id, &result, save_path)?;
+                }
+            }
         }
 
         let avg = millis.iter().sum::<f64>() / millis.len() as f64;
@@ -248,6 +259,61 @@ impl RunOpt {
             }
         }
         Ok(result)
+    }
+
+    fn save_query_results(
+        &self,
+        query_id: usize,
+        result: &[RecordBatch],
+        save_path: &PathBuf,
+    ) -> Result<()> {
+        use std::fs;
+        use std::io::Write;
+
+        // Create the directory if it doesn't exist
+        fs::create_dir_all(save_path)?;
+
+        // Format: q<N>.out (matching TPC-H answer file format)
+        let file_path = save_path.join(format!("q{query_id}.out"));
+        let mut file = fs::File::create(&file_path)?;
+
+        // Write results in pipe-delimited format (matching TPC-H answer files)
+        if !result.is_empty() {
+            // Write header
+            let schema = result[0].schema();
+            let header = schema
+                .fields()
+                .iter()
+                .map(|f| format!("{:<25}", f.name()))
+                .collect::<Vec<_>>()
+                .join("|");
+            writeln!(file, "{header}")?;
+
+            // Write data rows
+            for batch in result {
+                for row_idx in 0..batch.num_rows() {
+                    let row = batch
+                        .columns()
+                        .iter()
+                        .map(|col| {
+                            let cast_array = arrow::compute::cast(
+                                col,
+                                &arrow::datatypes::DataType::Utf8,
+                            )
+                            .unwrap();
+                            let val = arrow::array::cast::as_string_array(&cast_array)
+                                .value(row_idx);
+                            format!("{val:<25}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    writeln!(file, "{row}")?;
+                }
+            }
+        }
+
+        println!("Saved query {query_id} results to {file_path:?}");
+        Ok(())
     }
 
     async fn get_table(

@@ -195,6 +195,73 @@ Benchmark tpch_mem.json
 └──────────────┴──────────────┴──────────────┴───────────────┘
 ```
 
+## Comparing query result correctness between branches
+
+In addition to comparing performance, you can also compare the actual query results to detect correctness regressions. This is useful for verifying that optimization changes don't alter query outputs.
+
+**Note:** This comparison is only meaningful for deterministic queries (like TPC-H). Non-deterministic queries may produce different but equally valid results.
+
+### Step 1: Run benchmarks with `--save-results` flag
+
+First, run your benchmarks with the `--save-results` flag to save query outputs to files:
+
+```shell
+git checkout main
+
+# Run benchmark and save results
+cargo run --release --bin tpch -- benchmark datafusion \
+  --iterations 5 \
+  --path benchmarks/data/tpch_sf10 \
+  --format parquet \
+  --save-results results/main/results
+
+# Switch to your branch and save results
+git checkout mybranch
+cargo run --release --bin tpch -- benchmark datafusion \
+  --iterations 5 \
+  --path benchmarks/data/tpch_sf10 \
+  --format parquet \
+  --save-results results/mybranch/results
+```
+
+### Step 2: Compare results using `bench.sh`
+
+Compare results between the two branches:
+
+```shell
+./bench.sh compare_results main mybranch
+```
+
+This produces output like:
+
+```
+┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Query        ┃         main ┃     mybranch ┃        Status ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ Q1           │     4 rows   │     4 rows   │      ✓ MATCH  │
+│ Q2           │   100 rows   │   100 rows   │      ✓ MATCH  │
+│ Q21          │    24 rows   │     4 rows   │   ✗ DIFFERENT │
+...
+└──────────────┴──────────────┴──────────────┴───────────────┘
+
+Queries with different results: Q21
+This indicates a correctness regression.
+```
+
+### Alternative: Direct comparison with specific directories
+
+You can also compare results from specific directories directly:
+
+```shell
+# Compare results from two different result directories
+./benchmarks/compare_results.py \
+  results/baseline/results \
+  results/optimized/results \
+  --detailed
+```
+
+The `--detailed` flag shows the first 20 rows of differences for queries with mismatched results.
+
 ### Running Benchmarks Manually
 
 Assuming data is in the `data` directory, the `tpch` benchmark can be run with a command like this:

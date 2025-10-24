@@ -53,6 +53,7 @@ $0 data [benchmark]
 $0 run [benchmark] [query]
 $0 compare <branch1> <branch2>
 $0 compare_detail <branch1> <branch2>
+$0 compare_results <branch1> <branch2>
 $0 venv
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -71,6 +72,7 @@ data:            Generates or downloads data needed for benchmarking
 run:             Runs the named benchmark
 compare:         Compares fastest results from benchmark runs
 compare_detail:  Compares minimum, average (±stddev), and maximum results from benchmark runs
+compare_results: Compares query result correctness between benchmark runs (for deterministic queries only)
 venv:            Creates new venv (unless already exists) and installs compare's requirements into it
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -471,6 +473,9 @@ main() {
             ;;
         compare_detail)
             compare_benchmarks "$ARG2" "$ARG3" "--detailed"
+            ;;
+        compare_results)
+            compare_results_command "$ARG2" "$ARG3"
             ;;
         venv)
             setup_venv
@@ -1118,6 +1123,42 @@ compare_benchmarks() {
         fi
     done
 
+}
+
+compare_results_command() {
+    BASE_RESULTS_DIR="${SCRIPT_DIR}/results"
+    BRANCH1="$1"
+    BRANCH2="$2"
+
+    if [ -z "$BRANCH1" ] ; then
+        echo "<branch1> not specified. Available branches:"
+        ls -1 "${BASE_RESULTS_DIR}"
+        exit 1
+    fi
+
+    if [ -z "$BRANCH2" ] ; then
+        echo "<branch2> not specified"
+        ls -1 "${BASE_RESULTS_DIR}"
+        exit 1
+    fi
+
+    RESULTS_DIR1="${BASE_RESULTS_DIR}/${BRANCH1}/results"
+    RESULTS_DIR2="${BASE_RESULTS_DIR}/${BRANCH2}/results"
+
+    if [ ! -d "$RESULTS_DIR1" ] ; then
+        echo "Error: Results directory not found: ${RESULTS_DIR1}"
+        echo "Make sure you ran the benchmark with --save-results flag"
+        exit 1
+    fi
+
+    if [ ! -d "$RESULTS_DIR2" ] ; then
+        echo "Error: Results directory not found: ${RESULTS_DIR2}"
+        echo "Make sure you ran the benchmark with --save-results flag"
+        exit 1
+    fi
+
+    echo "Comparing query results between ${BRANCH1} and ${BRANCH2}"
+    PATH=$VIRTUAL_ENV/bin:$PATH python3 "${SCRIPT_DIR}"/compare_results.py "${RESULTS_DIR1}" "${RESULTS_DIR2}" --detailed
 }
 
 setup_venv() {
