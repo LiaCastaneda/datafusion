@@ -935,7 +935,8 @@ impl ExecutionPlan for HashJoinExec {
             enable_dynamic_filter_pushdown && !enable_hash_collection;
 
         let join_metrics = BuildProbeJoinMetrics::new(partition, &self.metrics);
-        let (left_fut, reservation) = match self.mode {
+        let (left_fut, _reservation) = match self.mode {
+            // TODO: this memory reservation???
             PartitionMode::CollectLeft => {
                 let reservation =
                     MemoryConsumer::new("HashJoinInput").register(context.memory_pool());
@@ -1006,7 +1007,6 @@ impl ExecutionPlan for HashJoinExec {
                             filter,
                             on_right,
                             self.random_state,
-                            reservation,
                         ))
                     })))
                 })

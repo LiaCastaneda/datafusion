@@ -121,8 +121,6 @@
 use std::{any::Any, fmt, hash::Hash, sync::Arc};
 
 use crate::joins::utils::JoinHashMapType;
-use crate::joins::utils::NoHashHasher;
-use crate::joins::utils::NoHashSet;
 use crate::joins::PartitionMode;
 use crate::ExecutionPlan;
 use crate::ExecutionPlanProperties;
@@ -134,10 +132,7 @@ use arrow::{
     datatypes::{DataType, Schema},
     util::bit_util,
 };
-use datafusion_common::utils::memory::estimate_memory_size;
-use datafusion_common::HashSet;
 use datafusion_common::{hash_utils::create_hashes, Result, ScalarValue};
-use datafusion_execution::memory_pool::MemoryReservation;
 use datafusion_expr::{ColumnarValue, Operator};
 use datafusion_physical_expr::expressions::{lit, BinaryExpr, DynamicFilterPhysicalExpr};
 use datafusion_physical_expr::PhysicalExpr;
@@ -145,6 +140,11 @@ use datafusion_physical_expr::PhysicalExpr;
 use itertools::Itertools;
 use parking_lot::Mutex;
 use tokio::sync::Barrier;
+
+/// Random state used by RepartitionExec for partitioning data.
+/// We use the same seeds to compute which partition a row belongs to,
+/// ensuring consistency with how DataFusion partitions data across streams.
+static REPARTITION_RANDOM_STATE: RandomState = RandomState::with_seeds(0, 0, 0, 0);
 
 /// Represents the minimum and maximum values for a specific column.
 /// Used in dynamic filter pushdown to establish value boundaries.
@@ -231,10 +231,15 @@ struct SharedBuildState {
     /// Bounds from completed partitions.
     /// Each element represents the column bounds computed by one partition.
     bounds: Vec<PartitionBounds>,
-    /// Hashes from the left (build) side, if enabled
-    left_hashes: NoHashSet<u64>,
-    /// Memory reservation tracking the memory used by `left_hashes`
-    reservation: MemoryReservation,
+    /// Hash tables from the left (build) side, if enabled.
+    /// - For CollectLeft mode: Vec with 1 element at index 0
+    /// - For Partitioned mode: Vec with N elements, where hash_tables[i] is partition i's table
+    ///   Uses Option to handle partitions that haven't reported yet or have no hashes
+    hash_tables: Vec<Option<Arc<dyn JoinHashMapType>>>,
+    /// Partition mode to determine how to create the filter (Single vs Partitioned)
+    partition_mode: PartitionMode,
+    /// Number of partitions (for Partitioned mode hash routing)
+    num_partitions: usize,
 }
 
 impl SharedBuildAccumulator {
@@ -270,7 +275,6 @@ impl SharedBuildAccumulator {
         dynamic_filter: Arc<DynamicFilterPhysicalExpr>,
         on_right: Vec<Arc<dyn PhysicalExpr>>,
         random_state: &'static RandomState,
-        reservation: MemoryReservation,
     ) -> Self {
         // Troubleshooting: If partition counts are incorrect, verify this logic matches
         // the actual execution pattern in collect_build_side()
@@ -286,13 +290,21 @@ impl SharedBuildAccumulator {
             // Default value, will be resolved during optimization (does not exist once `execute()` is called; will be replaced by one of the other two)
             PartitionMode::Auto => unreachable!("PartitionMode::Auto should not be present at execution time. This is a bug in DataFusion, please report it!"),
         };
+        let num_partitions = match partition_mode {
+            PartitionMode::CollectLeft => 1,
+            PartitionMode::Partitioned => {
+                left_child.output_partitioning().partition_count()
+            }
+            PartitionMode::Auto => unreachable!(),
+        };
+
         Self {
             inner: Mutex::new(SharedBuildState {
                 bounds: Vec::with_capacity(expected_calls),
-                left_hashes: HashSet::with_hasher(core::hash::BuildHasherDefault::<
-                    NoHashHasher,
-                >::default()),
-                reservation,
+                // Pre-allocate Vec with None placeholders for each partition
+                hash_tables: vec![None; num_partitions],
+                partition_mode,
+                num_partitions,
             }),
             barrier: Barrier::new(expected_calls),
             dynamic_filter,
@@ -423,31 +435,51 @@ impl SharedBuildAccumulator {
         if let Some(left_hash_map) = left_hash_map {
             if left_hash_map.num_hashes() > 0 {
                 let mut inner = self.inner.lock();
-
-                let fixed_size = size_of::<NoHashSet<u64>>();
-
-                let estimated_additional_size =
-                    estimate_memory_size::<u64>(left_hash_map.num_hashes(), fixed_size)?;
-                inner.reservation.try_grow(estimated_additional_size)?;
-                inner.left_hashes.extend(left_hash_map.hashes());
+                // Store hash table at the correct partition index
+                // This ensures hash_tables[partition_id] corresponds to that partition's data
+                inner.hash_tables[left_side_partition_id] =
+                    Some(Arc::clone(&left_hash_map));
             }
         }
 
         if self.barrier.wait().await.is_leader() {
             // All partitions have reported, so we can update the filter
-            let mut inner = self.inner.lock();
+            let inner = self.inner.lock();
             let maybe_bounds_expr = if !inner.bounds.is_empty() {
                 Some(self.create_filter_from_partition_bounds(&inner.bounds)?)
             } else {
                 None
             };
 
-            let maybe_hash_eval_expr = if !inner.left_hashes.is_empty() {
+            // Check if we have any hash tables to use
+            let has_hash_tables = inner.hash_tables.iter().any(|opt| opt.is_some());
+
+            let maybe_hash_eval_expr = if has_hash_tables {
+                // Create the appropriate strategy based on partition mode
+                let strategy = match inner.partition_mode {
+                    PartitionMode::CollectLeft => {
+                        // Single hash table shared by all probe partitions
+                        // Unwrap is safe because we checked has_hash_tables above
+                        HashCheckStrategy::Single(Arc::clone(
+                            inner.hash_tables[0].as_ref().unwrap(),
+                        ))
+                    }
+                    PartitionMode::Partitioned => {
+                        // Multiple hash tables - need partition routing
+                        // Keep the Vec structure intact (with Options) so partition_id
+                        // correctly maps to hash_tables[partition_id]
+                        HashCheckStrategy::Partitioned {
+                            hash_tables: inner.hash_tables.clone(),
+                            num_partitions: inner.num_partitions,
+                        }
+                    }
+                    PartitionMode::Auto => unreachable!(),
+                };
+
                 Some(Arc::new(HashComparePhysicalExpr::new(
                     self.on_right.clone(),
-                    Arc::new(std::mem::take(&mut inner.left_hashes)),
+                    strategy,
                     self.random_state,
-                    inner.reservation.take(),
                 )) as Arc<dyn PhysicalExpr>)
             } else {
                 None
@@ -478,8 +510,28 @@ impl fmt::Debug for SharedBuildAccumulator {
     }
 }
 
+/// Strategy for checking if a hash exists in the build side.
+/// Determines whether to use a single hash table or route to multiple partitioned tables.
+enum HashCheckStrategy {
+    /// Single hash table (CollectLeft mode)
+    /// All probe rows check against one shared hash table
+    Single(Arc<dyn JoinHashMapType>),
+
+    /// Multiple hash tables with partition routing (Partitioned mode)
+    /// Probe rows are routed to the correct partition's hash table based on hash value.
+    ///
+    /// Uses `Option` because:
+    /// 1. Empty partitions: A partition with no rows won't report a hash table
+    /// 2. Zero hashes: A partition where `num_hashes() == 0` won't store a table (see line 437)
+    ///    In evaluate(), we treat `None` as "no matches in this partition" (skip the row).
+    Partitioned {
+        hash_tables: Vec<Option<Arc<dyn JoinHashMapType>>>,
+        num_partitions: usize,
+    },
+}
+
 /// A [`PhysicalExpr`] that evaluates to a boolean array indicating which rows in a batch
-/// have hashes that exist in a given set of hashes.
+/// have hashes that exist in the build-side hash tables.
 ///
 /// This is currently used to implement hash-based dynamic filters in hash joins. That is,
 /// this expression can be pushed down to the probe side of a hash join to filter out rows
@@ -488,26 +540,22 @@ impl fmt::Debug for SharedBuildAccumulator {
 struct HashComparePhysicalExpr {
     /// Expressions that will be evaluated to compute hashes for filtering
     exprs: Vec<Arc<dyn PhysicalExpr>>,
-    /// Hashes to filter against
-    hashes: Arc<NoHashSet<u64>>,
+    /// Strategy for checking hashes (single table or partitioned)
+    strategy: HashCheckStrategy,
     /// Random state for hash computation
     random_state: &'static RandomState,
-    /// Memory reservation used to track the memory used by `hashes`
-    reservation: MemoryReservation,
 }
 
 impl HashComparePhysicalExpr {
     pub fn new(
         exprs: Vec<Arc<dyn PhysicalExpr>>,
-        hashes: Arc<NoHashSet<u64>>,
+        strategy: HashCheckStrategy,
         random_state: &'static RandomState,
-        reservation: MemoryReservation,
     ) -> Self {
         Self {
             exprs,
-            hashes,
+            strategy,
             random_state,
-            reservation,
         }
     }
 }
@@ -561,11 +609,25 @@ impl PhysicalExpr for HashComparePhysicalExpr {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
+        // Clone the strategy - for Single it clones the Arc
+        // for Partitioned it clones the Vec of Arcs
+        let strategy = match &self.strategy {
+            HashCheckStrategy::Single(table) => {
+                HashCheckStrategy::Single(Arc::clone(table))
+            }
+            HashCheckStrategy::Partitioned {
+                hash_tables,
+                num_partitions,
+            } => HashCheckStrategy::Partitioned {
+                hash_tables: hash_tables.clone(),
+                num_partitions: *num_partitions,
+            },
+        };
+
         Ok(Arc::new(Self {
             exprs: children,
-            hashes: Arc::clone(&self.hashes),
+            strategy,
             random_state: self.random_state,
-            reservation: self.reservation.new_empty(),
         }))
     }
 
@@ -589,15 +651,55 @@ impl PhysicalExpr for HashComparePhysicalExpr {
             .map(|col| col.evaluate(batch)?.into_array(num_rows))
             .collect::<Result<Vec<_>>>()?;
 
-        // Compute hashes for each row based on the evaluated expressions
-        let mut hashes_buffer = vec![0; num_rows];
-        create_hashes(&expr_values, self.random_state, &mut hashes_buffer)?;
+        // Compute join hashes for each probe row based on the evaluated expressions
+        // These are used for the actual hash table lookup
+        let mut join_hashes = vec![0; num_rows];
+        create_hashes(&expr_values, self.random_state, &mut join_hashes)?;
 
-        // Create a boolean array where each position indicates if the corresponding hash is in the set of known hashes
+        // Create a boolean array based on the strategy
         let mut buf = MutableBuffer::from_len_zeroed(bit_util::ceil(num_rows, 8));
-        for (idx, hash) in hashes_buffer.into_iter().enumerate() {
-            if self.hashes.contains(&hash) {
-                bit_util::set_bit(buf.as_slice_mut(), idx);
+
+        match &self.strategy {
+            HashCheckStrategy::Single(hash_table) => {
+                // Simple case: check against one hash table
+                for (idx, join_hash) in join_hashes.into_iter().enumerate() {
+                    if hash_table.contains_hash(&join_hash) {
+                        bit_util::set_bit(buf.as_slice_mut(), idx);
+                    }
+                }
+            }
+            HashCheckStrategy::Partitioned {
+                hash_tables,
+                num_partitions,
+            } => {
+                // Partitioned case: use two-hash approach for correct partition routing
+                //
+                // Hash 1 (partition_hashes): Computed with same random state as RepartitionExec
+                //         to determine which partition this row belongs to
+                // Hash 2 (join_hashes): Computed with join's random state for actual lookup
+                //         in the hash table
+                let mut partition_hashes = vec![0; num_rows];
+                create_hashes(
+                    &expr_values,
+                    &REPARTITION_RANDOM_STATE,
+                    &mut partition_hashes,
+                )?;
+
+                for idx in 0..num_rows {
+                    // Use partition hash to determine which hash table to check
+                    let partition_id =
+                        (partition_hashes[idx] % (*num_partitions as u64)) as usize;
+
+                    // Use join hash to look up in that specific partition's hash table
+                    let join_hash = join_hashes[idx];
+
+                    // Check the hash table for that partition (if it exists)
+                    if let Some(hash_table) = &hash_tables[partition_id] {
+                        if hash_table.contains_hash(&join_hash) {
+                            bit_util::set_bit(buf.as_slice_mut(), idx);
+                        }
+                    }
+                }
             }
         }
 

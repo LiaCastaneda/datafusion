@@ -104,6 +104,12 @@ impl JoinHashMapType for PruningJoinHashMap {
     fn num_hashes(&self) -> usize {
         self.map.len()
     }
+
+    fn contains_hash(&self, hash: &u64) -> bool {
+        self.map
+            .find(*hash, |(entry_hash, _)| entry_hash == hash)
+            .is_some()
+    }
 }
 
 /// The `PruningJoinHashMap` is similar to a regular `JoinHashMap`, but with

@@ -121,6 +121,11 @@ pub trait JoinHashMapType: Send + Sync {
     fn num_hashes(&self) -> usize;
 
     fn hashes(&self) -> Box<dyn Iterator<Item = u64> + '_>;
+
+    /// Check if a hash value exists in this hash map.
+    /// Used for dynamic filter pushdown to efficiently check if a probe-side
+    /// hash exists in the build-side without iterating through all entries.
+    fn contains_hash(&self, hash: &u64) -> bool;
 }
 
 pub struct JoinHashMapU32 {
@@ -195,6 +200,12 @@ impl JoinHashMapType for JoinHashMapU32 {
 
     fn num_hashes(&self) -> usize {
         self.map.len()
+    }
+
+    fn contains_hash(&self, hash: &u64) -> bool {
+        self.map
+            .find(*hash, |(entry_hash, _)| entry_hash == hash)
+            .is_some()
     }
 }
 
@@ -279,6 +290,12 @@ impl JoinHashMapType for JoinHashMapU64 {
 
     fn num_hashes(&self) -> usize {
         self.map.len()
+    }
+
+    fn contains_hash(&self, hash: &u64) -> bool {
+        self.map
+            .find(*hash, |(entry_hash, _)| entry_hash == hash)
+            .is_some()
     }
 }
 
