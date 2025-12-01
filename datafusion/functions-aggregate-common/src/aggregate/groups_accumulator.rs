@@ -32,7 +32,8 @@ use arrow::{
     compute::take_arrays,
     datatypes::UInt32Type,
 };
-use datafusion_common::{Result, ScalarValue, arrow_datafusion_err};
+use arrow_buffer::MemoryPool;
+use datafusion_common::{arrow_datafusion_err, DataFusionError, Result, ScalarValue};
 use datafusion_expr_common::accumulator::Accumulator;
 use datafusion_expr_common::groups_accumulator::{EmitTo, GroupsAccumulator};
 
@@ -393,6 +394,13 @@ impl GroupsAccumulator for GroupsAccumulatorAdapter {
 
     fn size(&self) -> usize {
         self.allocation_bytes
+    }
+
+    fn claim_buffers(&self, pool: &dyn MemoryPool) {
+        // Delegate to each wrapped Accumulator
+        for state in &self.states {
+            state.accumulator.claim_buffers(pool);
+        }
     }
 
     fn convert_to_state(
