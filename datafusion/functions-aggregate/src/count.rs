@@ -29,6 +29,7 @@ use arrow::{
         UInt8Type, UInt16Type, UInt32Type, UInt64Type,
     },
 };
+use arrow_buffer::MemoryPool;
 use datafusion_common::{
     HashMap, Result, ScalarValue, downcast_value, internal_err, not_impl_err,
     stats::Precision, utils::expr::COUNT_STAR_EXPANSION,
@@ -500,7 +501,7 @@ impl Accumulator for SlidingDistinctCountAccumulator {
         true
     }
 
-    fn size(&self) -> usize {
+    fn size(&self, _pool: Option<&dyn MemoryPool>) -> usize {
         size_of_val(self)
     }
 }
@@ -551,7 +552,7 @@ impl Accumulator for CountAccumulator {
         true
     }
 
-    fn size(&self) -> usize {
+    fn size(&self, _pool: Option<&dyn MemoryPool>) -> usize {
         size_of_val(self)
     }
 }
@@ -714,7 +715,7 @@ impl GroupsAccumulator for CountGroupsAccumulator {
         true
     }
 
-    fn size(&self) -> usize {
+    fn size(&self, _pool: Option<&dyn MemoryPool>) -> usize {
         self.counts.capacity() * size_of::<usize>()
     }
 }
@@ -839,7 +840,7 @@ impl Accumulator for DistinctCountAccumulator {
         Ok(ScalarValue::Int64(Some(self.values.len() as i64)))
     }
 
-    fn size(&self) -> usize {
+    fn size(&self, _pool: Option<&dyn MemoryPool>) -> usize {
         match &self.state_data_type {
             DataType::Boolean | DataType::Null => self.fixed_size(),
             d if d.is_primitive() => self.fixed_size(),

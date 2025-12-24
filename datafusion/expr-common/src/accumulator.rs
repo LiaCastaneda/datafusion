@@ -72,33 +72,11 @@ pub trait Accumulator: Send + Sync + Debug {
     /// when possible (for example distinct strings)
     fn evaluate(&mut self) -> Result<ScalarValue>;
 
-    /// Returns the size of non-Arrow allocations in bytes, including `Self`.
+    /// Returns allocated memory size in bytes and optionally claims Arrow buffers.
     ///
-    /// This value is used to calculate the memory used during
-    /// execution so DataFusion can stay within its allocated limit.
-    ///
-    /// This includes Vec capacity, BufferBuilder capacity, and other
-    /// non-Arrow data structures. Arrow Buffer memory should be tracked
-    /// separately via [`claim_buffers`].
-    ///
-    /// "Allocated" means that for internal containers such as `Vec`,
-    /// the `capacity` should be used not the `len`.
-    ///
-    /// [`claim_buffers`]: Self::claim_buffers
-    fn size(&self) -> usize;
-
-    /// Claim Arrow buffers with the memory pool for accurate tracking.
-    ///
-    /// This method should be called to register Arrow Buffer instances
-    /// with the pool, enabling automatic deduplication of shared buffers.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation does nothing, which is appropriate for
-    /// accumulators that don't store Arrow arrays (e.g., simple numeric accumulators).
-    fn claim_buffers(&self, _pool: &dyn MemoryPool) {
-        // Default: no-op for accumulators without Arrow buffers
-    }
+    /// When `pool` is None, returns size of non-Arrow allocations (Vec capacity, etc.).
+    /// When `pool` is Some, also claims Arrow buffers with the pool for deduplication.
+    fn size(&self, pool: Option<&dyn MemoryPool>) -> usize;
 
     /// Returns the intermediate state of the accumulator, consuming the
     /// intermediate state.

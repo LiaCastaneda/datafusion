@@ -38,7 +38,7 @@ use crate::{RecordBatchStream, SendableRecordBatchStream};
 
 use arrow::array::*;
 use arrow::datatypes::SchemaRef;
-use arrow_buffer::{MemoryPool as ArrowMemoryPool, TrackingMemoryPool};
+use arrow_buffer::TrackingMemoryPool;
 use datafusion_common::{
     DataFusionError, Result, assert_eq_or_internal_err, assert_or_internal_err,
     internal_err,
@@ -1062,24 +1062,14 @@ impl GroupedHashAggregateStream {
     }
 
     fn update_memory_reservation(&mut self) -> Result<()> {
-        // Have all components claim their Arrow buffers
-        for accumulator in &self.accumulators {
-            accumulator.claim_buffers(&self.arrow_pool);
-        }
-        self.group_values.claim_buffers(&self.arrow_pool);
-        self.group_ordering.claim_buffers(&self.arrow_pool);
-
-        // Get deduplicated Arrow buffer memory
-        let arrow_tracked = self.arrow_pool.used();
-
-        // Get non-Arrow memory (Vecs, BufferBuilders, etc.)
-        let non_arrow_size = self.group_values.size()
+        let total_size = self.group_values.size()
             + self.group_ordering.size()
             + self.current_group_indices.capacity() * size_of::<usize>()
-            + self.accumulators.iter().map(|x| x.size()).sum::<usize>();
-
-        // Calculate total
-        let total_size = arrow_tracked + non_arrow_size;
+            + self
+                .accumulators
+                .iter()
+                .map(|x| x.size(Some(&self.arrow_pool)))
+                .sum::<usize>();
 
         let reservation_result = self.reservation.try_resize(total_size);
 

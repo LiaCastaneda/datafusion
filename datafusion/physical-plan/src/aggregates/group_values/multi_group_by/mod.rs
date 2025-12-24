@@ -40,7 +40,6 @@ use arrow::datatypes::{
     TimestampNanosecondType, TimestampSecondType, UInt8Type, UInt16Type, UInt32Type,
     UInt64Type,
 };
-use arrow_buffer::MemoryPool;
 use datafusion_common::hash_utils::create_hashes;
 use datafusion_common::{Result, internal_datafusion_err, not_impl_err};
 use datafusion_execution::memory_pool::proxy::{HashTableAllocExt, VecAllocExt};
@@ -97,17 +96,8 @@ pub trait GroupColumn: Send + Sync {
         self.len() == 0
     }
 
-    /// Returns the size of non-Arrow allocations in bytes.
-    ///
-    /// This includes Vec capacity, BufferBuilder capacity, and other
-    /// non-Arrow data structures. Arrow Buffer memory should be tracked
-    /// separately via [`claim_buffers`](GroupColumn::claim_buffers).
+    /// Returns the number of bytes used by this [`GroupColumn`]
     fn size(&self) -> usize;
-
-    /// Claims all internal Arrow buffers with the provided memory pool.
-    ///
-    /// Default implementation does nothing (for builders that don't store arrays with shared buffers).
-    fn claim_buffers(&self, _pool: &dyn MemoryPool) {}
 
     /// Builds a new array from all of the stored rows
     fn build(self: Box<Self>) -> ArrayRef;
@@ -1072,14 +1062,8 @@ impl<const STREAMING: bool> GroupValues for GroupValuesColumn<STREAMING> {
     }
 
     fn size(&self) -> usize {
-        self.map_size + self.hashes_buffer.allocated_size()
-    }
-
-    fn claim_buffers(&self, pool: &dyn MemoryPool) {
-        // Claim buffers from each GroupColumn implementation
-        for group_col in &self.group_values {
-            group_col.claim_buffers(pool);
-        }
+        let group_values_size: usize = self.group_values.iter().map(|v| v.size()).sum();
+        group_values_size + self.map_size + self.hashes_buffer.allocated_size()
     }
 
     fn is_empty(&self) -> bool {

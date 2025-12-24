@@ -18,7 +18,7 @@
 //! Vectorized [`GroupsAccumulator`]
 
 use arrow::array::{ArrayRef, BooleanArray};
-use arrow_buffer::MemoryPool as ArrowMemoryPool;
+use arrow_buffer::MemoryPool;
 use datafusion_common::{Result, not_impl_err};
 
 /// Describes how many rows should be emitted during grouping.
@@ -245,35 +245,9 @@ pub trait GroupsAccumulator: Send {
         false
     }
 
-    /// Amount of memory used to store the state of this accumulator,
-    /// in bytes.
-    /// Returns the size of non-Arrow allocations in bytes.
+    /// Returns allocated memory size in bytes and optionally claims Arrow buffers.
     ///
-    /// This includes Vec capacity, BufferBuilder capacity, and other
-    /// non-Arrow data structures. Arrow Buffer memory should be tracked
-    /// separately via [`claim_buffers`].
-    ///
-    /// This function is called once per batch, so it should be `O(n)` to
-    /// compute, not `O(num_groups)`
-    ///
-    /// [`claim_buffers`]: GroupsAccumulator::claim_buffers
-    fn size(&self) -> usize;
-
-    /// Claims all internal Arrow buffers with the provided memory pool.
-    ///
-    /// This method should call `.claim()` on all Arrow `Buffer`s held by
-    /// this accumulator to enable accurate memory tracking that automatically
-    /// deduplicates shared buffers.
-    ///
-    /// # Arguments
-    ///
-    /// * `pool` - Arrow memory pool to claim buffers with
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation does nothing, which is appropriate for
-    /// accumulators that don't store Arrow arrays (e.g., simple numeric accumulators).
-    fn claim_buffers(&self, _pool: &dyn ArrowMemoryPool) {
-        // Default: no-op for accumulators without Arrow buffers
-    }
+    /// When `pool` is None, returns size of non-Arrow allocations (Vec capacity, etc.).
+    /// When `pool` is Some, also claims Arrow buffers with the pool for deduplication.
+    fn size(&self, pool: Option<&dyn MemoryPool>) -> usize;
 }

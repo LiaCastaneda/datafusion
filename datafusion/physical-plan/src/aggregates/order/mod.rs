@@ -112,13 +112,7 @@ impl GroupOrdering {
         Ok(())
     }
 
-    /// Return the size of non-Arrow allocations used by the ordering state, in bytes.
-    ///
-    /// This includes Vec capacity, ScalarValue allocations, and other
-    /// non-Arrow data structures. Arrow Buffer memory should be tracked
-    /// separately via [`claim_buffers`].
-    ///
-    /// [`claim_buffers`]: GroupOrdering::claim_buffers
+    /// Return the size of memory used by the ordering state, in bytes
     pub fn size(&self) -> usize {
         size_of::<Self>()
             + match self {
@@ -127,12 +121,4 @@ impl GroupOrdering {
                 GroupOrdering::Full(full) => full.size(),
             }
     }
-
-    /// Claim Arrow buffers with the memory pool for accurate tracking.
-    ///
-    /// This method should be called to register Arrow Buffer instances
-    /// with the pool, enabling automatic deduplication of shared buffers.
-    ///
-    /// Current implementations do not store Arrow buffers, so this is a no-op.
-    pub fn claim_buffers(&self, _pool: &dyn arrow_buffer::MemoryPool) {}
 }

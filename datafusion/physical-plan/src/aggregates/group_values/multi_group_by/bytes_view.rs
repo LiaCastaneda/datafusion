@@ -22,7 +22,6 @@ use crate::aggregates::group_values::null_builder::MaybeNullBufferBuilder;
 use arrow::array::{Array, ArrayRef, AsArray, ByteView, GenericByteViewArray, make_view};
 use arrow::buffer::{Buffer, ScalarBuffer};
 use arrow::datatypes::ByteViewType;
-use arrow_buffer::MemoryPool;
 use datafusion_common::Result;
 use itertools::izip;
 use std::marker::PhantomData;
@@ -558,15 +557,17 @@ impl<B: ByteViewType> GroupColumn for ByteViewGroupValueBuilder<B> {
     }
 
     fn size(&self) -> usize {
+        let buffers_size = self
+            .completed
+            .iter()
+            .map(|buf| buf.capacity() * size_of::<u8>())
+            .sum::<usize>();
+
         self.nulls.allocated_size()
             + self.views.capacity() * size_of::<u128>()
             + self.in_progress.capacity() * size_of::<u8>()
+            + buffers_size
             + size_of::<Self>()
-    }
-
-    fn claim_buffers(&self, pool: &dyn MemoryPool) {
-        // Claim completed buffers that were converted from Vec during progressive 2MB block fills
-        self.completed.iter().for_each(|buf| buf.claim(pool));
     }
 
     fn build(self: Box<Self>) -> ArrayRef {

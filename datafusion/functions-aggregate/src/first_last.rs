@@ -37,6 +37,7 @@ use arrow::datatypes::{
     TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type,
     UInt16Type, UInt32Type, UInt64Type,
 };
+use arrow_buffer::MemoryPool;
 use datafusion_common::cast::as_boolean_array;
 use datafusion_common::utils::{compare_rows, extract_row_at_idx_to_buf, get_row_at_idx};
 use datafusion_common::{
@@ -743,7 +744,7 @@ where
         Ok(())
     }
 
-    fn size(&self) -> usize {
+    fn size(&self, _pool: Option<&dyn MemoryPool>) -> usize {
         self.vals.capacity() * size_of::<T::Native>()
             + self.null_builder.capacity() / 8 // capacity is in bits, so convert to bytes
             + self.is_sets.capacity() / 8
@@ -854,7 +855,7 @@ impl Accumulator for TrivialFirstValueAccumulator {
         Ok(self.first.clone())
     }
 
-    fn size(&self) -> usize {
+    fn size(&self, _pool: Option<&dyn MemoryPool>) -> usize {
         size_of_val(self) - size_of_val(&self.first) + self.first.size()
     }
 }
@@ -1018,7 +1019,7 @@ impl Accumulator for FirstValueAccumulator {
         Ok(self.first.clone())
     }
 
-    fn size(&self) -> usize {
+    fn size(&self, _pool: Option<&dyn MemoryPool>) -> usize {
         size_of_val(self) - size_of_val(&self.first)
             + self.first.size()
             + ScalarValue::size_of_vec(&self.orderings)
@@ -1356,7 +1357,7 @@ impl Accumulator for TrivialLastValueAccumulator {
         Ok(self.last.clone())
     }
 
-    fn size(&self) -> usize {
+    fn size(&self, _pool: Option<&dyn MemoryPool>) -> usize {
         size_of_val(self) - size_of_val(&self.last) + self.last.size()
     }
 }
@@ -1524,7 +1525,7 @@ impl Accumulator for LastValueAccumulator {
         Ok(self.last.clone())
     }
 
-    fn size(&self) -> usize {
+    fn size(&self, _pool: Option<&dyn MemoryPool>) -> usize {
         size_of_val(self) - size_of_val(&self.last)
             + self.last.size()
             + ScalarValue::size_of_vec(&self.orderings)
@@ -1942,7 +1943,7 @@ mod tests {
 
             first_accumulator.update_batch(values)?;
 
-            Ok(first_accumulator.size())
+            Ok(first_accumulator.size(None))
         }
 
         let batch1 = ListArray::from_iter_primitive::<Int32Type, _, _>(
@@ -1968,7 +1969,7 @@ mod tests {
 
             last_accumulator.update_batch(values)?;
 
-            Ok(last_accumulator.size())
+            Ok(last_accumulator.size(None))
         }
 
         let batch1 = ListArray::from_iter_primitive::<Int32Type, _, _>(
