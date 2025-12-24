@@ -134,8 +134,5 @@ impl GroupOrdering {
     /// with the pool, enabling automatic deduplication of shared buffers.
     ///
     /// Current implementations do not store Arrow buffers, so this is a no-op.
-    pub fn claim_buffers(&self, _pool: &dyn arrow_buffer::MemoryPool) {
-        // No-op: Current implementations use Vec and ScalarValue, not Arrow buffers.
-        // Memory is tracked via size() method.
-    }
+    pub fn claim_buffers(&self, _pool: &dyn arrow_buffer::MemoryPool) {}
 }

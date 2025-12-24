@@ -19,7 +19,7 @@
 
 use arrow::array::ArrayRef;
 use arrow_buffer::MemoryPool;
-use datafusion_common::{internal_err, Result, ScalarValue};
+use datafusion_common::{Result, ScalarValue, internal_err};
 use std::fmt::Debug;
 
 /// Tracks an aggregate function's state.
@@ -75,7 +75,7 @@ pub trait Accumulator: Send + Sync + Debug {
     /// Returns the size of non-Arrow allocations in bytes, including `Self`.
     ///
     /// This value is used to calculate the memory used during
-    /// execution so DataFusion can stay within its allotted limit.
+    /// execution so DataFusion can stay within its allocated limit.
     ///
     /// This includes Vec capacity, BufferBuilder capacity, and other
     /// non-Arrow data structures. Arrow Buffer memory should be tracked

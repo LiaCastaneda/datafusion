@@ -44,7 +44,6 @@ use datafusion_common::{
     internal_err,
 };
 use datafusion_execution::TaskContext;
-use datafusion_execution::memory_pool::proxy::VecAllocExt;
 use datafusion_execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion_expr::{EmitTo, GroupsAccumulator};
 use datafusion_physical_expr::aggregate::AggregateFunctionExpr;

@@ -19,7 +19,7 @@
 
 use arrow::array::{ArrayRef, BooleanArray};
 use arrow_buffer::MemoryPool as ArrowMemoryPool;
-use datafusion_common::{not_impl_err, Result};
+use datafusion_common::{Result, not_impl_err};
 
 /// Describes how many rows should be emitted during grouping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

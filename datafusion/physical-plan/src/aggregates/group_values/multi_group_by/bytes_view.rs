@@ -565,6 +565,7 @@ impl<B: ByteViewType> GroupColumn for ByteViewGroupValueBuilder<B> {
     }
 
     fn claim_buffers(&self, pool: &dyn MemoryPool) {
+        // Claim completed buffers that were converted from Vec during progressive 2MB block fills
         self.completed.iter().for_each(|buf| buf.claim(pool));
     }
 

@@ -33,7 +33,7 @@ use arrow::{
     datatypes::UInt32Type,
 };
 use arrow_buffer::MemoryPool;
-use datafusion_common::{arrow_datafusion_err, DataFusionError, Result, ScalarValue};
+use datafusion_common::{Result, ScalarValue, arrow_datafusion_err};
 use datafusion_expr_common::accumulator::Accumulator;
 use datafusion_expr_common::groups_accumulator::{EmitTo, GroupsAccumulator};
 
