@@ -245,9 +245,31 @@ pub trait GroupsAccumulator: Send {
         false
     }
 
-    /// Returns allocated memory size in bytes and optionally claims Arrow buffers.
+    /// Returns the allocated memory size required by this accumulator, in bytes.
     ///
-    /// When `pool` is None, returns size of non-Arrow allocations (Vec capacity, etc.).
-    /// When `pool` is Some, also claims Arrow buffers with the pool for deduplication.
+    /// This value is used to calculate the memory used during execution so
+    /// DataFusion can stay within its allocated memory limit.
+    ///
+    /// # Memory Pool for Shared Buffers
+    ///
+    /// When `pool` is `None`:
+    /// - Returns the total memory size including Arrow buffers
+    /// - This is the default behavior and works for most use cases
+    ///
+    /// When `pool` is `Some`:
+    /// - Returns only the structural size (the accumulator struct, Vec capacities, etc.)
+    /// - Claims Arrow buffers with the provided [`MemoryPool`] for tracking
+    /// - It is recommended when accumulators may share Arrow array buffers, as the pool
+    ///   automatically deduplicates shared buffers to provide accurate memory accounting
+    /// - Callers should add `pool.used()` to this return value for the total memory
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // With memory pool for accurate tracking when buffers may be shared
+    /// let pool = TrackingMemoryPool::default();
+    /// let structural_size = accumulator.size(Some(&pool));
+    /// let total_memory = structural_size + pool.used();
+    /// ```
     fn size(&self, pool: Option<&dyn MemoryPool>) -> usize;
 }
