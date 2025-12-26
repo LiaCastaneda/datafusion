@@ -441,7 +441,7 @@ pub(crate) struct GroupedHashAggregateStream {
     // Fields related to managing execution resources and monitoring performance.
     // ========================================================================
     /// Arrow memory pool for accurate buffer tracking
-    /// This pool tracks all Arrow buffers owned by accumulators and group_values
+    /// This pool tracks all Arrow buffers owned by accumulators
     /// to provide accurate memory accounting without double-counting shared buffers.
     arrow_pool: TrackingMemoryPool,
 

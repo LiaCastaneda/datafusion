@@ -394,16 +394,24 @@ impl Accumulator for ArrayAggAccumulator {
     }
 
     fn size(&self, pool: Option<&dyn MemoryPool>) -> usize {
+        let mut total = size_of_val(self)
+            + (size_of::<ArrayRef>() * self.values.capacity())
+            + self.datatype.size()
+            - size_of_val(&self.datatype);
+
         if let Some(pool) = pool {
             for arr in &self.values {
                 claim_buffers_recursive(&arr.to_data(), pool);
             }
+        } else {
+            total += self
+                .values
+                .iter()
+                .map(|arr| arr.to_data().get_slice_memory_size().unwrap_or_default())
+                .sum::<usize>();
         }
 
-        size_of_val(self)
-            + (size_of::<ArrayRef>() * self.values.capacity())
-            + self.datatype.size()
-            - size_of_val(&self.datatype)
+        total
     }
 }
 
@@ -802,7 +810,8 @@ impl Accumulator for OrderSensitiveArrayAggAccumulator {
                     if let Some(pool) = pool {
                         claim_buffers_recursive(&array.to_data(), pool);
                     } else {
-                        total += scalar.size() - size_of_val(scalar);
+                        total +=
+                            array.to_data().get_slice_memory_size().unwrap_or_default();
                     }
                 } else {
                     total += scalar.size() - size_of_val(scalar);
@@ -825,6 +834,7 @@ mod tests {
     use super::*;
     use arrow::array::{ListBuilder, StringBuilder};
     use arrow::datatypes::{FieldRef, Schema};
+    use arrow_buffer::TrackingMemoryPool;
     use datafusion_common::cast::as_generic_string_array;
     use datafusion_common::internal_err;
     use datafusion_physical_expr::PhysicalExpr;
@@ -1099,16 +1109,17 @@ mod tests {
         acc2.update_batch(&[data(["b", "c", "a"])])?;
         acc1 = merge(acc1, acc2)?;
 
-        let non_arrow_size = acc1.size(None);
-        assert_eq!(non_arrow_size, 236);
+        // Calculate size without using the arrow memory pool (it will default to use get_slice_memory_size)
+        let size_without_pool = acc1.size(None);
+        assert_eq!(size_without_pool, 266);
 
-        let pool = arrow_buffer::TrackingMemoryPool::default();
-        let total_size = acc1.size(Some(&pool));
-        let arrow_buffer_size = pool.used();
-
-        assert_eq!(arrow_buffer_size, 2080);
-        assert_eq!(total_size, non_arrow_size);
-        assert_eq!(non_arrow_size + arrow_buffer_size, 2316);
+        // Calculate size using the arrow memory pool.
+        // pool.used() returns the full physical buffer capacity (offsets, nulls, data, capacity overhead),
+        // while get_slice_memory_size() only counts logical data size.
+        let pool = TrackingMemoryPool::default();
+        let fixed_size = acc1.size(Some(&pool));
+        let size_with_pool = pool.used() + fixed_size;
+        assert_eq!(size_with_pool, 2316);
 
         Ok(())
     }
@@ -1126,8 +1137,9 @@ mod tests {
         acc2.update_batch(&[string_list_data([vec!["e", "f", "g"]])])?;
         acc1 = merge(acc1, acc2)?;
 
-        let pool = arrow_buffer::TrackingMemoryPool::default();
+        let pool = TrackingMemoryPool::default();
         let total_size = acc1.size(Some(&pool));
+        // if we don't use the memory pool: size(None); we get 16576
         assert_eq!(total_size, 484);
 
         Ok(())
@@ -1145,8 +1157,9 @@ mod tests {
             vec!["b", "c", "d"],
         ])])?;
 
-        let pool = arrow_buffer::TrackingMemoryPool::default();
+        let pool = TrackingMemoryPool::default();
         let total_size = acc.size(Some(&pool));
+        // if we don't use the memory pool: size(None); we get 17148
         assert_eq!(total_size, 1056);
 
         Ok(())
