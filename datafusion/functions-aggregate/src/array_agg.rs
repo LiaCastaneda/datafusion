@@ -45,6 +45,8 @@ use datafusion_functions_aggregate_common::utils::ordering_fields;
 use datafusion_macros::user_doc;
 use datafusion_physical_expr_common::sort_expr::{LexOrdering, PhysicalSortExpr};
 
+use crate::utils::claim_buffers_recursive;
+
 make_udaf_expr_and_func!(
     ArrayAgg,
     array_agg,
@@ -394,9 +396,7 @@ impl Accumulator for ArrayAggAccumulator {
     fn size(&self, pool: Option<&dyn MemoryPool>) -> usize {
         if let Some(pool) = pool {
             for arr in &self.values {
-                for buffer in arr.to_data().buffers() {
-                    buffer.claim(pool);
-                }
+                claim_buffers_recursive(&arr.to_data(), pool);
             }
         }
 
@@ -523,9 +523,9 @@ impl Accumulator for DistinctArrayAggAccumulator {
             if let Some(array) = scalar.get_array_ref() {
                 total += size_of::<Arc<dyn Array>>();
                 if let Some(pool) = pool {
-                    for buffer in array.to_data().buffers() {
-                        buffer.claim(pool);
-                    }
+                    claim_buffers_recursive(&array.to_data(), pool);
+                } else {
+                    total += scalar.size() - size_of_val(scalar);
                 }
             } else {
                 total += scalar.size() - size_of_val(scalar);
@@ -784,9 +784,9 @@ impl Accumulator for OrderSensitiveArrayAggAccumulator {
             if let Some(array) = scalar.get_array_ref() {
                 total += size_of::<Arc<dyn Array>>();
                 if let Some(pool) = pool {
-                    for buffer in array.to_data().buffers() {
-                        buffer.claim(pool);
-                    }
+                    claim_buffers_recursive(&array.to_data(), pool);
+                } else {
+                    total += scalar.size() - size_of_val(scalar);
                 }
             } else {
                 total += scalar.size() - size_of_val(scalar);
@@ -800,9 +800,9 @@ impl Accumulator for OrderSensitiveArrayAggAccumulator {
                 if let Some(array) = scalar.get_array_ref() {
                     total += size_of::<Arc<dyn Array>>();
                     if let Some(pool) = pool {
-                        for buffer in array.to_data().buffers() {
-                            buffer.claim(pool);
-                        }
+                        claim_buffers_recursive(&array.to_data(), pool);
+                    } else {
+                        total += scalar.size() - size_of_val(scalar);
                     }
                 } else {
                     total += scalar.size() - size_of_val(scalar);
