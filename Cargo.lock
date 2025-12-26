@@ -1833,6 +1833,7 @@ name = "datafusion"
 version = "51.0.0"
 dependencies = [
  "arrow",
+ "arrow-buffer",
  "arrow-schema",
  "async-trait",
  "bytes",
@@ -2194,6 +2195,7 @@ name = "datafusion-examples"
 version = "51.0.0"
 dependencies = [
  "arrow",
+ "arrow-buffer",
  "arrow-flight",
  "arrow-schema",
  "async-trait",
@@ -2291,6 +2293,7 @@ version = "51.0.0"
 dependencies = [
  "abi_stable",
  "arrow",
+ "arrow-buffer",
  "arrow-schema",
  "async-ffi",
  "async-trait",
@@ -2598,6 +2601,7 @@ name = "datafusion-proto"
 version = "51.0.0"
 dependencies = [
  "arrow",
+ "arrow-buffer",
  "async-trait",
  "chrono",
  "datafusion",
@@ -2677,6 +2681,7 @@ name = "datafusion-spark"
 version = "51.0.0"
 dependencies = [
  "arrow",
+ "arrow-buffer",
  "bigdecimal",
  "chrono",
  "crc32fast",
@@ -2758,6 +2763,7 @@ dependencies = [
 name = "datafusion-substrait"
 version = "51.0.0"
 dependencies = [
+ "arrow-buffer",
  "async-recursion",
  "async-trait",
  "chrono",
