@@ -72,6 +72,7 @@ use util::{OptimizationTest, TestNode, TestScanBuilder, format_plan_for_test};
 use crate::physical_optimizer::filter_pushdown::util::TestSource;
 
 mod util;
+mod test_rdf_fusion_edge_case;
 
 #[test]
 fn test_pushdown_into_scan() {

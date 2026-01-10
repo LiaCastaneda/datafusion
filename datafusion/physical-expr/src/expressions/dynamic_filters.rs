@@ -310,14 +310,15 @@ impl DynamicFilterPhysicalExpr {
     /// that created the filter). This is useful to avoid computing expensive filter
     /// expressions when no consumer will actually use them.
     ///
-    /// Note: We check the inner Arc's strong_count, not the outer Arc's count, because
-    /// when filters are transformed (e.g., via reassign_expr_columns during filter pushdown),
-    /// new outer Arc instances are created via with_new_children(), but they all share the
-    /// same inner `Arc<RwLock<Inner>>`. This is what allows filter updates to propagate to
-    /// consumers even after transformation.
+    /// Note: We check both the outer Arc's strong_count AND the inner Arc's strong_count:
+    /// - When filters are transformed (e.g., via reassign_expr_columns during filter pushdown),
+    ///   new outer Arc instances are created via with_new_children(), incrementing the inner count.
+    /// - When custom DataSource implementations clone the filter directly without transformation,
+    ///   only the outer Arc count increases.
+    /// Either case indicates the filter is being used by a consumer.
     pub fn is_used(self: &Arc<Self>) -> bool {
         // Strong count > 1 means at least one consumer is holding a reference beyond the producer.
-        Arc::strong_count(&self.inner) > 1
+        Arc::strong_count(self) > 1 || Arc::strong_count(&self.inner) > 1
     }
 
     fn render(
