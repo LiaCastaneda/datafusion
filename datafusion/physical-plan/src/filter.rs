@@ -522,6 +522,13 @@ impl ExecutionPlan for FilterExec {
             context.task_id()
         );
         let metrics = FilterExecMetrics::new(&self.metrics, partition);
+
+        // Create single memory reservation for tracking all arrays in this stream
+        // (both filtered arrays and coalesced arrays)
+        use datafusion_execution::memory_pool::MemoryConsumer;
+        let consumer = MemoryConsumer::new(format!("FilterExec[partition={partition}]"));
+        let reservation = consumer.register(context.memory_pool());
+
         Ok(Box::pin(FilterExecStream {
             schema: self.schema(),
             predicate: Arc::clone(&self.predicate),
@@ -533,6 +540,7 @@ impl ExecutionPlan for FilterExec {
                 self.batch_size,
                 self.fetch,
             ),
+            reservation,
         }))
     }
 
@@ -815,6 +823,8 @@ struct FilterExecStream {
     projection: Option<ProjectionRef>,
     /// Batch coalescer to combine small batches
     batch_coalescer: LimitedBatchCoalescer,
+    /// Memory reservation for tracking filtered arrays
+    reservation: datafusion_execution::memory_pool::MemoryReservation,
 }
 
 /// The metrics for `FilterExec`
@@ -882,6 +892,7 @@ impl Stream for FilterExecStream {
             // If there is a completed batch ready, return it
             if let Some(batch) = self.batch_coalescer.next_completed_batch() {
                 self.metrics.selectivity.add_part(batch.num_rows());
+                datafusion_execution::memory_pool::arrow::claim_batch(&batch,self.reservation.arrow_pool().as_ref());
                 let poll = Poll::Ready(Some(Ok(batch)));
                 return self.metrics.baseline_metrics.record_poll(poll);
             }
@@ -915,7 +926,11 @@ impl Stream for FilterExecStream {
                                 Ok(filter_array) => {
                                     self.metrics.selectivity.add_total(batch.num_rows());
                                     // TODO: support push_batch_with_filter in LimitedBatchCoalescer
-                                    let batch = filter_record_batch(&batch, filter_array)?;
+                                    let batch = datafusion_execution::memory_pool::compute::filter_record_batch(
+                                        &batch,
+                                        filter_array,
+                                        &self.reservation,
+                                    )?;
                                     let state = self.batch_coalescer.push_batch(batch)?;
                                     Ok(state)
                                 }

@@ -24,8 +24,8 @@ use std::{cmp::Ordering, sync::Arc, sync::atomic};
 
 mod pool;
 
-#[cfg(feature = "arrow_buffer_pool")]
 pub mod arrow;
+pub mod compute;
 
 pub mod proxy {
     pub use datafusion_common::utils::proxy::{HashTableAllocExt, VecAllocExt};
@@ -321,9 +321,16 @@ impl MemoryConsumer {
     /// a [`MemoryReservation`] that can be used to grow or shrink the memory reservation
     pub fn register(self, pool: &Arc<dyn MemoryPool>) -> MemoryReservation {
         pool.register(&self);
+
+        let arrow_pool = Arc::new(arrow::ArrowMemoryPool::new(
+            Arc::clone(pool),
+            self.clone_with_new_id(),
+        ));
+
         MemoryReservation {
             registration: Arc::new(SharedRegistration {
                 pool: Arc::clone(pool),
+                arrow_pool,
                 consumer: self,
             }),
             size: atomic::AtomicUsize::new(0),
@@ -338,6 +345,7 @@ impl MemoryConsumer {
 #[derive(Debug)]
 struct SharedRegistration {
     pool: Arc<dyn MemoryPool>,
+    arrow_pool: Arc<arrow::ArrowMemoryPool>,
     consumer: MemoryConsumer,
 }
 
@@ -367,6 +375,15 @@ impl MemoryReservation {
     /// Returns [MemoryConsumer] for this [MemoryReservation]
     pub fn consumer(&self) -> &MemoryConsumer {
         &self.registration.consumer
+    }
+
+    /// Returns a reference to the [`arrow::ArrowMemoryPool`] for this reservation.
+    ///
+    /// This pool can be used to track Arrow array allocations using Arrow's
+    /// memory pool APIs, while still being tracked by DataFusion's memory management.
+    pub fn arrow_pool(&self) -> &Arc<arrow::ArrowMemoryPool> {
+        // COMMENT: This should probably be private but because of the coalescer I needed it to be public
+        &self.registration.arrow_pool
     }
 
     /// Frees all bytes from this reservation back to the underlying

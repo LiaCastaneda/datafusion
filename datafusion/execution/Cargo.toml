@@ -53,7 +53,7 @@ sql = []
 
 [dependencies]
 arrow = { workspace = true }
-arrow-buffer = { workspace = true }
+arrow-buffer = { workspace = true, features = ["pool"] }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
