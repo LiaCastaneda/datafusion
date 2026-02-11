@@ -445,6 +445,8 @@ mod lazy_memory_tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion_expr::Operator;
     use futures::StreamExt;
+    use crate::filter::FilterExec;
+    use datafusion_physical_expr::expressions::{BinaryExpr, Column, Literal};
 
     #[derive(Debug, Clone)]
     struct TestGenerator {
@@ -651,9 +653,6 @@ mod lazy_memory_tests {
 
     #[tokio::test]
     async fn test_memory_tracking_through_plan() -> Result<()> {
-        use crate::filter::FilterExec;
-        use datafusion_physical_expr::expressions::{BinaryExpr, Column, Literal};
-
         // LazyMemoryExec creates arrays → FilterExec filters them → memory gets tracked
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
 

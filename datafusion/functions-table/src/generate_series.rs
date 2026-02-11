@@ -28,6 +28,7 @@ use datafusion_catalog::TableFunctionImpl;
 use datafusion_catalog::TableProvider;
 use datafusion_common::{Result, ScalarValue, plan_err};
 use datafusion_expr::{Expr, TableType};
+use datafusion_execution::memory_pool::MemoryReservation;
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::memory::{LazyBatchGenerator, LazyMemoryExec};
 use parking_lot::RwLock;
@@ -53,7 +54,7 @@ impl LazyBatchGenerator for Empty {
         self
     }
 
-    fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>> {
+    fn generate_next_batch(&mut self, _reservation: &MemoryReservation) -> Result<Option<RecordBatch>> {
         Ok(None)
     }
 
@@ -382,7 +383,7 @@ impl<T: SeriesValue> LazyBatchGenerator for GenericSeriesState<T> {
         self
     }
 
-    fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>> {
+    fn generate_next_batch(&mut self, _reservation: &MemoryReservation) -> Result<Option<RecordBatch>> {
         let mut buf = Vec::with_capacity(self.batch_size);
 
         while buf.len() < self.batch_size
@@ -765,6 +766,7 @@ mod generate_series_tests {
 
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion_common::Result;
+    use datafusion_execution::memory_pool::{MemoryConsumer, UnboundedMemoryPool, MemoryPool};
     use datafusion_physical_plan::memory::LazyBatchGenerator;
 
     use crate::generate_series::GenericSeriesState;
@@ -782,12 +784,18 @@ mod generate_series_tests {
             include_end: true,
             name: "test",
         };
-        let batch = state.generate_next_batch()?.expect("missing batch");
+
+        // Create a memory reservation for the test
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let consumer = MemoryConsumer::new("test");
+        let reservation = consumer.register(&pool);
+
+        let batch = state.generate_next_batch(&reservation)?.expect("missing batch");
 
         let state_reset = state.reset_state();
         let reset_batch = state_reset
             .write()
-            .generate_next_batch()?
+            .generate_next_batch(&reservation)?
             .expect("missing reset batch");
 
         assert_eq!(batch, reset_batch);

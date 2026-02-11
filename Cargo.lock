@@ -2314,6 +2314,7 @@ dependencies = [
  "async-trait",
  "datafusion-catalog",
  "datafusion-common",
+ "datafusion-execution",
  "datafusion-expr",
  "datafusion-physical-plan",
  "parking_lot",
