@@ -208,6 +208,10 @@ name = "push_down_filter"
 
 [[bench]]
 harness = false
+name = "aggregate_dict"
+
+[[bench]]
+harness = false
 name = "repartition_dict"
 
 [[bench]]
