@@ -37,6 +37,10 @@ use arrow::datatypes::TimeUnit::{self, Microsecond, Millisecond, Nanosecond, Sec
 use arrow::datatypes::{Field, FieldRef};
 use datafusion_common::cast::as_primitive_array;
 use datafusion_common::types::{NativeType, logical_date, logical_string};
+
+use super::timestamp_with_offset::{
+    is_timestamp_with_offset, rebuild_timestamp_with_offset,
+};
 use datafusion_common::{
     DataFusionError, Result, ScalarValue, exec_datafusion_err, exec_err, internal_err,
 };
@@ -242,6 +246,7 @@ impl ScalarUDFImpl for DateTruncFunc {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let scalar_args = args.clone();
         let args = args.args;
         let (granularity, array) = (&args[0], &args[1]);
 
@@ -314,6 +319,46 @@ impl ScalarUDFImpl for DateTruncFunc {
             };
             let value = ScalarValue::new_timestamp::<T>(value, tz_opt.clone());
             Ok(ColumnarValue::Scalar(value))
+        }
+
+        // TimestampWithOffset: truncate the UTC timestamp child, preserve per-row offsets,
+        // and reconstruct the struct.
+        if matches!(&array, ColumnarValue::Array(a) if is_timestamp_with_offset(a.data_type()))
+        {
+            let inner_array = match &array {
+                ColumnarValue::Array(a) => Arc::clone(a),
+                _ => unreachable!(),
+            };
+            let struct_array = inner_array
+                .as_any()
+                .downcast_ref::<arrow::array::StructArray>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution(
+                        "TimestampWithOffset: expected StructArray".into(),
+                    )
+                })?;
+            let ts_child = Arc::clone(struct_array.column(0));
+            let off_child: ArrayRef = Arc::clone(struct_array.column(1));
+            let nulls = struct_array.nulls().cloned();
+
+            // Recurse: run date_trunc on the bare UTC timestamp child.
+            let child_args = ScalarFunctionArgs {
+                args: vec![
+                    ColumnarValue::Scalar(ScalarValue::Utf8(Some(
+                        granularity_str.clone(),
+                    ))),
+                    ColumnarValue::Array(ts_child),
+                ],
+                ..scalar_args
+            };
+            let truncated_cv = self.invoke_with_args(child_args)?;
+            let truncated_arr = match truncated_cv {
+                ColumnarValue::Array(a) => a,
+                ColumnarValue::Scalar(sv) => sv.to_array()?,
+            };
+
+            let rebuilt = rebuild_timestamp_with_offset(truncated_arr, off_child, nulls)?;
+            return Ok(ColumnarValue::Array(rebuilt));
         }
 
         Ok(match array {

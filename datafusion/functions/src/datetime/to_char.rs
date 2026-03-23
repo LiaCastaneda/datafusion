@@ -20,6 +20,10 @@ use std::sync::Arc;
 
 use arrow::array::builder::StringBuilder;
 use arrow::array::cast::AsArray;
+use arrow::array::types::{
+    TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+    TimestampSecondType,
+};
 use arrow::array::{Array, ArrayRef};
 use arrow::compute::cast;
 use arrow::datatypes::DataType;
@@ -28,7 +32,13 @@ use arrow::datatypes::DataType::{
 };
 use arrow::datatypes::TimeUnit::{Microsecond, Millisecond, Nanosecond, Second};
 use arrow::util::display::{ArrayFormatter, DurationFormat, FormatOptions};
+use chrono::{DateTime, FixedOffset, Utc};
+use datafusion_common::cast::as_primitive_array;
 use datafusion_common::{Result, ScalarValue, exec_err, utils::take_function_args};
+
+use super::timestamp_with_offset::{
+    is_timestamp_with_offset, offset_minutes_child, timestamp_child,
+};
 use datafusion_expr::TypeSignature::Exact;
 use datafusion_expr::{
     ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature,
@@ -139,6 +149,23 @@ impl ScalarUDFImpl for ToCharFunc {
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         let args = args.args;
         let [date_time, format] = take_function_args(self.name(), &args)?;
+
+        // TimestampWithOffset: format in local time by applying the per-row offset.
+        if is_timestamp_with_offset(&date_time.data_type()) {
+            let fmt = match format {
+                ColumnarValue::Scalar(ScalarValue::Null | ScalarValue::Utf8(None)) => {
+                    return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)));
+                }
+                ColumnarValue::Scalar(ScalarValue::Utf8(Some(fmt))) => fmt.as_str(),
+                _ => {
+                    return exec_err!(
+                        "Format for `to_char` with TimestampWithOffset must be a non-null scalar Utf8"
+                    );
+                }
+            };
+            let arr = date_time.to_array(1)?;
+            return to_char_timestamp_with_offset(arr.as_ref(), fmt);
+        }
 
         match format {
             ColumnarValue::Scalar(ScalarValue::Null | ScalarValue::Utf8(None)) => {
@@ -292,6 +319,83 @@ fn to_char_array(args: &[ColumnarValue]) -> Result<ColumnarValue> {
         }
         ColumnarValue::Array(_) => Ok(ColumnarValue::Array(Arc::new(result) as ArrayRef)),
     }
+}
+
+/// Format a `TimestampWithOffset` struct array in local time.
+///
+/// Each row's UTC timestamp is shifted by its per-row `offset_minutes` value before formatting,
+/// so the output reflects the original local wall-clock time rather than UTC.
+///
+/// TODO: once the arrow-rs `ArrayFormatter` gains native `TimestampWithOffset` support via
+/// `ArrayFormatter::try_new_with_field`, replace this with a direct `ArrayFormatter` call.
+fn to_char_timestamp_with_offset(
+    array: &dyn Array,
+    format: &str,
+) -> Result<ColumnarValue> {
+    let ts_child = timestamp_child(array)?;
+    let offsets = offset_minutes_child(array)?;
+
+    let time_unit = match ts_child.data_type() {
+        Timestamp(tu, _) => *tu,
+        other => {
+            return exec_err!(
+                "TimestampWithOffset: timestamp child has unexpected type {other}"
+            );
+        }
+    };
+
+    let len = array.len();
+    let mut builder = StringBuilder::with_capacity(len, len * (format.len() + 10));
+
+    for i in 0..len {
+        if array.is_null(i) || ts_child.is_null(i) || offsets.is_null(i) {
+            builder.append_null();
+            continue;
+        }
+
+        let utc_nanos: i64 = match time_unit {
+            Second => {
+                as_primitive_array::<TimestampSecondType>(ts_child.as_ref())?.value(i)
+                    * 1_000_000_000
+            }
+            Millisecond => {
+                as_primitive_array::<TimestampMillisecondType>(ts_child.as_ref())?
+                    .value(i)
+                    * 1_000_000
+            }
+            Microsecond => {
+                as_primitive_array::<TimestampMicrosecondType>(ts_child.as_ref())?
+                    .value(i)
+                    * 1_000
+            }
+            Nanosecond => {
+                as_primitive_array::<TimestampNanosecondType>(ts_child.as_ref())?.value(i)
+            }
+        };
+
+        let secs = utc_nanos / 1_000_000_000;
+        let nsecs = (utc_nanos % 1_000_000_000).unsigned_abs() as u32;
+        let utc_dt: DateTime<Utc> = match DateTime::from_timestamp(secs, nsecs) {
+            Some(dt) => dt,
+            None => {
+                builder.append_null();
+                continue;
+            }
+        };
+
+        let offset_secs = i64::from(offsets.value(i)) * 60;
+        let fixed_offset = match FixedOffset::east_opt(offset_secs as i32) {
+            Some(o) => o,
+            None => {
+                builder.append_null();
+                continue;
+            }
+        };
+        let local_dt: DateTime<FixedOffset> = utc_dt.with_timezone(&fixed_offset);
+        builder.append_value(local_dt.format(format).to_string());
+    }
+
+    Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
 }
 
 #[cfg(test)]

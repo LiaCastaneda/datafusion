@@ -32,6 +32,7 @@ pub mod make_date;
 pub mod make_time;
 pub mod now;
 pub mod planner;
+pub mod timestamp_with_offset;
 pub mod to_char;
 pub mod to_date;
 pub mod to_local_time;

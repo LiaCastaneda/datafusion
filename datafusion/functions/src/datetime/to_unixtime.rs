@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::timestamp_with_offset::{is_timestamp_with_offset, timestamp_child};
 use super::to_timestamp::ToTimestampSecondsFunc;
 use crate::datetime::common::*;
 use arrow::datatypes::{DataType, TimeUnit};
@@ -116,6 +117,20 @@ impl ScalarUDFImpl for ToUnixtimeFunc {
                     );
                 }
             }
+        }
+
+        // For TimestampWithOffset, epoch = UTC timestamp child converted to seconds.
+        // The per-row offset does not change the point in time.
+        if is_timestamp_with_offset(&arg_args[0].data_type()) {
+            let arr = arg_args[0].to_array(args.number_rows)?;
+            let ts_child = timestamp_child(arr.as_ref())?;
+            let tz = match ts_child.data_type() {
+                DataType::Timestamp(_, tz) => tz.clone(),
+                _ => None,
+            };
+            return ColumnarValue::Array(ts_child)
+                .cast_to(&DataType::Timestamp(TimeUnit::Second, tz), None)?
+                .cast_to(&DataType::Int64, None);
         }
 
         match arg_args[0].data_type() {

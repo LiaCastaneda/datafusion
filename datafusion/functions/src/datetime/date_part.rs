@@ -35,6 +35,8 @@ use arrow::datatypes::{
 use chrono::{Datelike, NaiveDate};
 use datafusion_common::types::{NativeType, logical_date};
 
+use super::timestamp_with_offset::{is_timestamp_with_offset, timestamp_child};
+
 use datafusion_common::{
     Result, ScalarValue,
     cast::{
@@ -205,6 +207,15 @@ impl ScalarUDFImpl for DatePartFunc {
         };
 
         let part_trim = part_normalization(&part);
+
+        // For TimestampWithOffset, delegate to the UTC timestamp child.
+        // date_part operates on the UTC values; callers requiring local-time parts
+        // should adjust the timestamp before calling this function.
+        let array = if is_timestamp_with_offset(array.data_type()) {
+            timestamp_child(array.as_ref())?
+        } else {
+            array
+        };
 
         // using IntervalUnit here means we hand off all the work of supporting plurals (like "seconds")
         // and synonyms ( like "ms,msec,msecond,millisecond") to Arrow
@@ -472,6 +483,13 @@ fn seconds(array: &dyn Array, unit: TimeUnit) -> Result<ArrayRef> {
 }
 
 fn epoch(array: &dyn Array) -> Result<ArrayRef> {
+    // For TimestampWithOffset, epoch is the UTC epoch of the stored timestamp —
+    // the offset does not change the point in time, only its display.
+    if is_timestamp_with_offset(array.data_type()) {
+        let ts = timestamp_child(array)?;
+        return epoch(ts.as_ref());
+    }
+
     const SECONDS_IN_A_DAY: f64 = 86400_f64;
     // Note: Month-to-second conversion uses 30 days as an approximation.
     // This matches PostgreSQL's behavior for interval epoch extraction,
