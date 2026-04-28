@@ -38,6 +38,7 @@ use datafusion_common::{
     metadata::FieldMetadata,
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRewriter},
 };
+use datafusion_expr::expr::HigherOrderFunction;
 use datafusion_expr::{
     BinaryExpr, Case, ColumnarValue, Expr, ExprSchemable, Like, Operator, Volatility,
     and, binary::BinaryTypeCoercer, lit, or, preimage::PreimageResult,
@@ -646,6 +647,9 @@ impl ConstEvaluator {
             Expr::ScalarFunction(ScalarFunction { func, .. }) => {
                 Self::volatility_ok(func.signature().volatility)
             }
+            Expr::HigherOrderFunction(HigherOrderFunction { func, .. }) => {
+                Self::volatility_ok(func.signature().volatility)
+            }
             Expr::Cast(Cast { expr, data_type })
             | Expr::TryCast(TryCast { expr, data_type }) => {
                 if let (
@@ -659,7 +663,10 @@ impl ConstEvaluator {
                     }
 
                     // Skip const-folding when there is no field name overlap
-                    if !has_one_of_more_common_fields(&source_fields, target_fields) {
+                    if !has_one_of_more_common_fields(
+                        source_fields.as_ref(),
+                        target_fields.as_ref(),
+                    ) {
                         return false;
                     }
 
@@ -693,7 +700,9 @@ impl ConstEvaluator {
             | Expr::Like { .. }
             | Expr::SimilarTo { .. }
             | Expr::Case(_)
-            | Expr::InList { .. } => true,
+            | Expr::InList { .. }
+            | Expr::Lambda(_)
+            | Expr::LambdaVariable(_) => true,
         }
     }
 

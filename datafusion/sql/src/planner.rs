@@ -270,6 +270,8 @@ pub struct PlannerContext {
     outer_from_schema: Option<DFSchemaRef>,
     /// The query schema defined by the table
     create_table_schema: Option<DFSchemaRef>,
+    /// The parameters of all lambdas seen so far
+    lambda_parameters: HashMap<String, FieldRef>,
 }
 
 impl Default for PlannerContext {
@@ -287,6 +289,7 @@ impl PlannerContext {
             outer_queries_schemas_stack: vec![],
             outer_from_schema: None,
             create_table_schema: None,
+            lambda_parameters: HashMap::new(),
         }
     }
 
@@ -394,6 +397,20 @@ impl PlannerContext {
     /// specified name
     pub fn get_cte(&self, cte_name: &str) -> Option<&LogicalPlan> {
         self.ctes.get(cte_name).map(|cte| cte.as_ref())
+    }
+
+    pub fn lambda_parameters(&self) -> &HashMap<String, FieldRef> {
+        &self.lambda_parameters
+    }
+
+    pub fn with_lambda_parameters(
+        mut self,
+        parameters: impl IntoIterator<Item = FieldRef>,
+    ) -> Self {
+        self.lambda_parameters
+            .extend(parameters.into_iter().map(|f| (f.name().clone(), f)));
+
+        self
     }
 
     /// Remove the plan of CTE / Subquery for the specified name
