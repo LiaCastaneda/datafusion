@@ -27,6 +27,7 @@ use crate::physical_plan::{
 use crate::protobuf;
 use datafusion_common::{Result, plan_datafusion_err};
 use datafusion_execution::TaskContext;
+use datafusion_expr::HigherOrderUDF;
 use datafusion_expr::{
     AggregateUDF, Expr, LogicalPlan, Volatility, WindowUDF, create_udaf, create_udf,
     create_udwf,
@@ -178,6 +179,19 @@ impl Serializeable for Expr {
 
             fn udwfs(&self) -> std::collections::HashSet<String> {
                 std::collections::HashSet::default()
+            }
+
+            fn higher_order_function_names(&self) -> std::collections::HashSet<String> {
+                std::collections::HashSet::default()
+            }
+
+            fn higher_order_function(
+                &self,
+                name: &str,
+            ) -> Result<Arc<dyn HigherOrderUDF>> {
+                datafusion_common::plan_err!(
+                    "No function registry provided to deserialize Higher Order Function '{name}'"
+                )
             }
         }
         Expr::from_bytes_with_registry(&bytes, &PlaceHolderRegistry)?;

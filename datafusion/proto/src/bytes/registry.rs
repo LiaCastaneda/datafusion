@@ -20,6 +20,7 @@ use std::{collections::HashSet, sync::Arc};
 use datafusion_common::Result;
 use datafusion_common::plan_err;
 use datafusion_execution::registry::FunctionRegistry;
+use datafusion_expr::HigherOrderUDF;
 use datafusion_expr::planner::ExprPlanner;
 use datafusion_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 
@@ -81,5 +82,15 @@ impl FunctionRegistry for NoRegistry {
 
     fn udwfs(&self) -> HashSet<String> {
         HashSet::new()
+    }
+
+    fn higher_order_function_names(&self) -> HashSet<String> {
+        HashSet::new()
+    }
+
+    fn higher_order_function(&self, name: &str) -> Result<Arc<dyn HigherOrderUDF>> {
+        plan_err!(
+            "No function registry provided to deserialize, so can not deserialize Higher Order Function '{name}'"
+        )
     }
 }
