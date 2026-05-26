@@ -18,6 +18,7 @@
 use crate::var_provider::{VarProvider, VarType};
 use chrono::{DateTime, Utc};
 use datafusion_common::HashMap;
+use datafusion_common::TableReference;
 use datafusion_common::alias::AliasGenerator;
 use datafusion_common::config::ConfigOptions;
 use std::sync::Arc;
@@ -42,6 +43,10 @@ pub struct ExecutionProps {
     pub config_options: Option<Arc<ConfigOptions>>,
     /// Providers for scalar variables
     pub var_providers: Option<HashMap<VarType, Arc<dyn VarProvider + Send + Sync>>>,
+    /// Maps each lambda variable name to its lambda qualifier generated
+    /// during physical planning. Populated by the physical planner for
+    /// each lambda before calling `create_physical_expr`.
+    pub lambda_variable_qualifier: HashMap<String, TableReference>,
 }
 
 impl Default for ExecutionProps {
@@ -58,6 +63,7 @@ impl ExecutionProps {
             alias_generator: Arc::new(AliasGenerator::new()),
             config_options: None,
             var_providers: None,
+            lambda_variable_qualifier: HashMap::new(),
         }
     }
 
@@ -117,6 +123,22 @@ impl ExecutionProps {
     pub fn config_options(&self) -> Option<&Arc<ConfigOptions>> {
         self.config_options.as_ref()
     }
+
+    /// Adds a mapping for each variable to the given qualifier. Existing
+    /// variables with conflicting names get's shadowed
+    pub fn with_qualified_lambda_variables(
+        mut self,
+        qualifier: &TableReference,
+        variables: &[String],
+    ) -> Self {
+        for var in variables {
+            self.lambda_variable_qualifier
+                .entry_ref(var)
+                .insert(qualifier.clone());
+        }
+
+        self
+    }
 }
 
 #[cfg(test)]
@@ -126,7 +148,7 @@ mod test {
     fn debug() {
         let props = ExecutionProps::new();
         assert_eq!(
-            "ExecutionProps { query_execution_start_time: None, alias_generator: AliasGenerator { next_id: 1 }, config_options: None, var_providers: None }",
+            "ExecutionProps { query_execution_start_time: None, alias_generator: AliasGenerator { next_id: 1 }, config_options: None, var_providers: None, lambda_variable_qualifier: {} }",
             format!("{props:?}")
         );
     }
