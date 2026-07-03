@@ -24,7 +24,7 @@ use crate::expr::{
 use crate::type_coercion::functions::value_fields_with_higher_order_udf;
 use crate::udf_eq::UdfEq;
 use crate::{ColumnarValue, Documentation, Expr, ExprSchemable};
-use arrow::array::{ArrayRef, RecordBatch};
+use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow_schema::SchemaRef;
 use datafusion_common::config::ConfigOptions;
@@ -381,6 +381,21 @@ fn merge_captures_with_variables(
             .map(|arg| arg())
             .collect::<Result<_>>()?,
     };
+
+    if columns.is_empty() {
+        // Constant body with no captures and no used params — derive row count
+        // from the first available variable closure so the batch has the right
+        // number of rows even with zero columns.
+        let row_count = match variables.first() {
+            Some(first) => first()?.len(),
+            None => 0,
+        };
+        return Ok(RecordBatch::try_new_with_options(
+            schema,
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(row_count)),
+        )?);
+    }
 
     Ok(RecordBatch::try_new(schema, columns)?)
 }

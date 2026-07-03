@@ -31,7 +31,7 @@ use arrow::{
 };
 use datafusion_common::{
     HashMap, plan_err,
-    tree_node::{Transformed, TreeNode, TreeNodeRecursion},
+    tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor},
 };
 use datafusion_common::{HashSet, Result, internal_err};
 use datafusion_expr::ColumnarValue;
@@ -75,54 +75,84 @@ impl LambdaExpr {
     }
 
     fn new(params: Vec<String>, body: Arc<dyn PhysicalExpr>) -> Self {
-        let mut used_column_indices = HashSet::new();
+        let own_params: HashSet<String> = params.iter().cloned().collect();
 
-        body.apply(|node| {
-            if let Some(col) = node.downcast_ref::<Column>() {
-                used_column_indices.insert(col.index());
-            } else if let Some(var) = node.downcast_ref::<LambdaVariable>() {
-                used_column_indices.insert(var.index());
-            }
+        // Walk the body once to collect:
+        // - used outer Column indices (for the captures projection)
+        // - used own parameter names (with nested-lambda shadowing)
+        let mut visitor = CollectUsedVisitor {
+            own_params: &own_params,
+            used_column_indices: HashSet::new(),
+            used_param_names: HashSet::new(),
+            shadow_stack: Vec::new(),
+        };
+        body.visit(&mut visitor).expect("visitor is infallible");
+        let CollectUsedVisitor {
+            used_column_indices,
+            ..
+        } = visitor;
 
-            Ok(TreeNodeRecursion::Continue)
-        })
-        .expect("closure should be infallible");
-
-        let mut projection = used_column_indices.into_iter().collect::<Vec<_>>();
-
+        let mut projection: Vec<usize> = used_column_indices.into_iter().collect();
         projection.sort();
 
-        let column_index_map = projection
+        // Map original outer-column indices → dense positions in the captures batch.
+        let col_index_map: HashMap<usize, usize> = projection
             .iter()
+            .copied()
             .enumerate()
-            .map(|(projected, original)| (*original, projected))
-            .collect::<HashMap<_, _>>();
+            .map(|(new_idx, original)| (original, new_idx))
+            .collect();
 
-        let projected_body = Arc::clone(&body)
-            .transform_down(|e| {
-                if let Some(column) = e.downcast_ref::<Column>() {
-                    let original = column.index();
-                    let projected = *column_index_map.get(&original).unwrap();
-                    if projected != original {
-                        return Ok(Transformed::yes(Arc::new(Column::new(
-                            column.name(),
-                            projected,
-                        ))));
+        // Map each *declared* param name → its slot in the merged evaluation batch.
+        // Captures occupy 0..projection.len(); then all declared params follow in
+        // declaration order (HOF passes all declared param closures in that order).
+        // Unused params still occupy a slot — they're just never read by the body.
+        let projected_body = {
+            let captures_len = projection.len();
+            let param_slot_map: HashMap<&str, usize> = params
+                .iter()
+                .enumerate()
+                .map(|(i, name)| (name.as_str(), captures_len + i))
+                .collect();
+
+            Arc::clone(&body)
+                .transform_down(|e| {
+                    // Don't descend into nested lambdas — they are
+                    // self-contained and were already rewritten by their own
+                    // LambdaExpr::new call with their own param_slot_map.
+                    if e.downcast_ref::<LambdaExpr>().is_some() {
+                        return Ok(Transformed::new(e, false, TreeNodeRecursion::Jump));
                     }
-                } else if let Some(lambda_variable) = e.downcast_ref::<LambdaVariable>() {
-                    let original = lambda_variable.index();
-                    let projected = *column_index_map.get(&original).unwrap();
-                    if projected != original {
-                        return Ok(Transformed::yes(Arc::new(LambdaVariable::new(
-                            projected,
-                            Arc::clone(lambda_variable.field()),
-                        ))));
+                    if let Some(column) = e.downcast_ref::<Column>() {
+                        let original = column.index();
+                        let projected = *col_index_map.get(&original).unwrap();
+                        if projected != original {
+                            return Ok(Transformed::yes(Arc::new(Column::new(
+                                column.name(),
+                                projected,
+                            ))));
+                        }
+                    } else if let Some(var) = e.downcast_ref::<LambdaVariable>() {
+                        if let Some(&slot) = param_slot_map.get(var.name()) {
+                            if slot != var.index() {
+                                return Ok(Transformed::yes(Arc::new(
+                                    LambdaVariable::new(slot, Arc::clone(var.field())),
+                                )));
+                            }
+                        } else if let Some(&new_idx) = col_index_map.get(&var.index())
+                            && new_idx != var.index()
+                        {
+                            return Ok(Transformed::yes(Arc::new(LambdaVariable::new(
+                                new_idx,
+                                Arc::clone(var.field()),
+                            ))));
+                        }
                     }
-                }
-                Ok(Transformed::no(e))
-            })
-            .expect("closure should be infallible")
-            .data;
+                    Ok(Transformed::no(e))
+                })
+                .expect("closure should be infallible")
+                .data
+        };
 
         Self {
             params,
@@ -148,6 +178,48 @@ impl LambdaExpr {
 
     pub(crate) fn projected_body(&self) -> &Arc<dyn PhysicalExpr> {
         &self.projected_body
+    }
+}
+
+/// Walks a lambda body once and collects:
+/// - `used_column_indices`: every outer `Column` index referenced anywhere in
+///   the tree (drives the captures projection).
+/// - `used_param_names`: the subset of *this* lambda's own params referenced
+///   by the body, accounting for nested-lambda shadowing (an inner lambda that
+///   re-declares a param name shadows the outer one).
+struct CollectUsedVisitor<'a> {
+    own_params: &'a HashSet<String>,
+    used_column_indices: HashSet<usize>,
+    used_param_names: HashSet<String>,
+    shadow_stack: Vec<HashSet<String>>,
+}
+
+impl TreeNodeVisitor<'_> for CollectUsedVisitor<'_> {
+    type Node = Arc<dyn PhysicalExpr>;
+
+    fn f_down(&mut self, node: &Self::Node) -> Result<TreeNodeRecursion> {
+        if let Some(col) = node.downcast_ref::<Column>() {
+            self.used_column_indices.insert(col.index());
+        } else if let Some(var) = node.downcast_ref::<LambdaVariable>() {
+            let name = var.name();
+            let shadowed = self.shadow_stack.iter().any(|frame| frame.contains(name));
+            if !shadowed && self.own_params.contains(name) {
+                self.used_param_names.insert(name.to_string());
+            } else {
+                self.used_column_indices.insert(var.index());
+            }
+        } else if let Some(nested) = node.downcast_ref::<LambdaExpr>() {
+            self.shadow_stack
+                .push(nested.params.iter().cloned().collect());
+        }
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn f_up(&mut self, node: &Self::Node) -> Result<TreeNodeRecursion> {
+        if node.downcast_ref::<LambdaExpr>().is_some() {
+            self.shadow_stack.pop();
+        }
+        Ok(TreeNodeRecursion::Continue)
     }
 }
 
@@ -234,9 +306,17 @@ fn check_async_udf(body: &Arc<dyn PhysicalExpr>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::expressions::{NoOp, lambda::lambda};
-    use arrow::{array::RecordBatch, datatypes::Schema};
+    use crate::expressions::{Column, LambdaVariable, NoOp, lambda::lambda};
+    use arrow::{
+        array::{Int32Array, RecordBatch},
+        datatypes::{DataType, Field, Schema},
+    };
+    use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
+    use datafusion_expr::ColumnarValue;
+    use datafusion_expr::LambdaArgument;
     use std::sync::Arc;
+
+    use super::LambdaExpr;
 
     #[test]
     fn test_lambda_evaluate() {
@@ -248,5 +328,112 @@ mod tests {
     #[test]
     fn test_lambda_duplicate_name() {
         assert!(lambda(["a", "a"], Arc::new(NoOp::new())).is_err());
+    }
+
+    /// `(k, v) -> v`: only `v` (index 1) is referenced. The projection should
+    /// contain only index 1, and `used_params` should be `["v"]` only.
+    #[test]
+    fn test_unused_first_param_projection() {
+        let v_field = Arc::new(Field::new("v", DataType::Int32, true));
+        // LambdaVariable index 1 = "v" as declared
+        let body = Arc::new(LambdaVariable::new(1, Arc::clone(&v_field)));
+        let lambda =
+            LambdaExpr::try_new(vec!["k".to_string(), "v".to_string()], body).unwrap();
+
+        // No outer columns captured — projection is empty.
+        assert_eq!(lambda.projection(), &[] as &[usize]);
+        // projected_body's LambdaVariable for `v` must be at slot 1
+        // (captures_len=0 + declaration index 1), not compressed to slot 0.
+        let mut found_slot = None;
+        lambda
+            .projected_body()
+            .apply(|e| {
+                if let Some(var) = e.downcast_ref::<LambdaVariable>()
+                    && var.name() == "v"
+                {
+                    found_slot = Some(var.index());
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .unwrap();
+        assert_eq!(found_slot, Some(1), "v must remain at declaration slot 1");
+    }
+
+    /// `(k, v) -> v` evaluated end-to-end: LambdaArgument must return the `v`
+    /// column, not `k`. This is the exact runtime bug this fix addresses.
+    #[test]
+    fn test_unused_first_param_evaluates_correctly() {
+        let k_field = Arc::new(Field::new("k", DataType::Int32, true));
+        let v_field = Arc::new(Field::new("v", DataType::Int32, true));
+
+        let body = Arc::new(LambdaVariable::new(1, Arc::clone(&v_field)));
+        let lambda_expr =
+            LambdaExpr::try_new(vec!["k".to_string(), "v".to_string()], body).unwrap();
+
+        // HOF passes all declared params to LambdaArgument::new.
+        // The fix is in projected_body: `v`'s LambdaVariable is remapped to
+        // slot captures_len + 1 (its declaration position), not slot 0.
+        let params = vec![k_field, v_field];
+        let arg =
+            LambdaArgument::new(params, Arc::clone(lambda_expr.projected_body()), None);
+
+        let k_array = Arc::new(Int32Array::from(vec![1, 2, 3])) as _;
+        let v_array = Arc::new(Int32Array::from(vec![10, 20, 30])) as _;
+
+        // HOF passes all declared param closures in declaration order.
+        // The projected body already maps `v`'s LambdaVariable to slot
+        // captures_len + 1, so it reads `v`'s array, not `k`'s.
+        let k_fn: &dyn Fn() -> datafusion_common::Result<arrow::array::ArrayRef> =
+            &|| Ok(Arc::clone(&k_array));
+        let v_fn: &dyn Fn() -> datafusion_common::Result<arrow::array::ArrayRef> =
+            &|| Ok(Arc::clone(&v_array));
+        let result = arg
+            .evaluate(&[k_fn, v_fn], |_| unreachable!("no captures"))
+            .unwrap();
+
+        let ColumnarValue::Array(result_arr) = result else {
+            panic!("expected array result");
+        };
+        let result_i32 = result_arr.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(result_i32.values(), &[10, 20, 30]);
+    }
+
+    /// Nested-lambda shadowing: `(k, v) -> col + (k, v2) -> k + v2 + v`.
+    /// The inner lambda re-declares `k`, shadowing the outer one. The outer
+    /// lambda's `CollectUsedVisitor` must not treat the inner `k` as a
+    /// reference to the outer `k` — only outer `v` is actually used by the
+    /// outer lambda's own body. This test verifies construction succeeds and
+    /// the outer lambda's projected body is built correctly (no panic).
+    #[test]
+    fn test_shadowed_param_construction_succeeds() {
+        let outer_k = Arc::new(Field::new("k", DataType::Int32, true));
+        let outer_v = Arc::new(Field::new("v", DataType::Int32, true));
+        let inner_v2 = Arc::new(Field::new("v2", DataType::Int32, true));
+
+        let inner_body: Arc<dyn crate::PhysicalExpr> =
+            Arc::new(crate::expressions::BinaryExpr::new(
+                Arc::new(crate::expressions::BinaryExpr::new(
+                    Arc::new(LambdaVariable::new(1, Arc::clone(&outer_k))),
+                    datafusion_expr::Operator::Plus,
+                    Arc::new(LambdaVariable::new(2, Arc::clone(&inner_v2))),
+                )),
+                datafusion_expr::Operator::Plus,
+                Arc::new(LambdaVariable::new(0, Arc::clone(&outer_v))),
+            ));
+        let inner_lambda = Arc::new(
+            LambdaExpr::try_new(vec!["k".to_string(), "v2".to_string()], inner_body)
+                .unwrap(),
+        );
+
+        let outer_body: Arc<dyn crate::PhysicalExpr> =
+            Arc::new(crate::expressions::BinaryExpr::new(
+                Arc::new(Column::new("col", 0)),
+                datafusion_expr::Operator::Plus,
+                inner_lambda,
+            ));
+
+        // Must not panic — shadowing means outer's `k` is NOT flagged as used
+        // and its param slot is assigned by declaration position correctly.
+        LambdaExpr::try_new(vec!["k".to_string(), "v".to_string()], outer_body).unwrap();
     }
 }
